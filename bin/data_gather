@@ -26,6 +26,7 @@ my @inputs = (
         type     => 'stream',    # don't start a timer for this
 	announce => 'max',
 	prev_val => 0,
+	max      => 0,
     },
     {
         measures   => 'voltage',
@@ -302,7 +303,18 @@ Mojo::IOLoop->recurring(
 		my $cur_val = delete $input->{value};
                 push @updates, $input->{measures} => $cur_val; # for rrd and Misc page
 
-		if ($input->{announce} =~ /\d+/) {  # for tts
+		# handle any updates via tts
+		if ($input->{announce} eq 'max') {
+		    if ($cur_val >= $input->{max}) {
+			$input->{max} = $cur_val;
+		    } elsif ($input->{prev_val} == $input->{max}) {
+		        my $max_announce =
+                            sprintf( 'New maximimum speed of %.2f meters per second', $input->{max} );
+			app->log->info($max_announce);
+			IO::Loop->timer(4 => app->speak( $max_announce ));
+                    }
+		    $input->{prev_val} = $cur_val;
+		} elsif ($input->{announce} =~ /\d+/) {
 		    if (abs($input->{prev_val} - $cur_val) >= $input->{announce}) {
 			app->log->info(sprintf('need to speak %s changed more than %d',
                                                $input->{measures}, $input->{announce}));
