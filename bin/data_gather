@@ -1,0 +1,483 @@
+#!/usr/bin/perl
+
+use Mojolicious::Lite;
+use Mojo::IOLoop;
+use Mojo::JSON qw(decode_json);
+use Mojo::Util qw(dumper);
+use RRD::Simple;
+
+use Statistics::Basic qw(:all);
+use Time::HiRes qw( usleep );
+use IO::Handle;
+use File::Temp;    # names for tts files
+
+app->plugin('RenderFile');
+app->plugin('CORS');
+app->plugin('ForkCall');    # used to have swift not block
+
+app->secrets( ['Specfying a secret to make the reminder go away.'] );
+
+my %last_values;
+
+my @inputs = (
+    {
+        measures => 'speed',
+        rate     => 0,
+        type     => 'stream',    # don't start a timer for this
+	announce => 'max',
+	prev_val => 0,
+    },
+    {
+        measures   => 'voltage',
+        rate       => 5,
+        type       => 'poll_raw',
+	announce   => 1,   # speak change in one volt
+	phrase     => '<voice name="Callie">Battery at %d volts</voice>',
+	prev_val   => 0,
+        file       => '/sys/class/saradc/saradc_ch1',
+        iterations => 2000,
+        calc       => sub {
+            if ( $_[0] eq 'U' ) {
+                return $_[0];
+            }
+            else {
+                return sprintf( '%.1f', $_[0] * 0.0158144438587243015 );
+            }
+        },
+    },
+    {
+        measures   => 'current',
+        rate       => 5,
+        type       => 'poll_raw',
+	announce   => 100,   # speak change in one hundred milliamp
+	phrase     => '<voice name="Callie">%d milliamps power being consumed</voice>',
+	prev_val   => 0,
+        file       => '/sys/class/saradc/saradc_ch0',
+        iterations => 2000,
+        calc       => sub {
+            if ( $_[0] eq 'U' ) {
+                return $_[0];
+            }
+            elsif ( $_[0] <= 27.4 ) {
+                return sprintf( '%.1f', 11.91290308 * $_[0] - 66.70509526 );
+            }
+            else {
+                return sprintf( '%.1f', 10.49189781 * $_[0] - 27.39734405 );
+            }
+        },
+    },
+    {
+        measures   => 'cpu_temp',
+        rate       => 30,
+        type       => 'poll_raw',
+	announce   => 3,   # speak change in 3 degrees
+	phrase     => '<voice name="Callie">Core temp is %d degrees C</voice>',
+	prev_val   => 0,
+        file       => '/sys/devices/virtual/hwmon/hwmon0/temp1_input',
+        iterations => 1,
+        calc       => sub { return sprintf( '%.2f', $_[0] ) },
+    },
+    {
+        measures   => 'case_temp',
+        rate       => 30,
+        type       => 'poll_1wire',
+	announce   => 3,   # speak change in 3 degrees
+	phrase     => '<voice name="Callie">Case temp is %d degrees C</voice>',
+	prev_val   => 0,
+        file       => '/sys/bus/w1/devices/28-000005308e73/w1_slave',
+        iterations => 1,
+        calc       => sub { return $_[0] },
+    },
+);
+
+get '/self' => sub {
+    my $c = shift;
+
+    $c->render( json => { function => 'Misc' } );
+
+# ugh this is nasty but I need to store it here because it does not work in the helper
+    app->defaults->{audio_url} = $c->url_for('audio')->to_abs;
+};
+
+get '/script' => { template => 'script' };
+
+get '/audio' => sub {
+    my $c    = shift;
+    my $file = $c->param('file');
+
+    # Open file in browser(do not show save dialog)
+    $c->render_file(
+        'filepath'            => "../archive/$file",
+        'content_disposition' => 'inline'
+    );
+};
+
+#get '/standings' => sub {
+#    my $c = shift;
+
+#    $c->render( json => app->defaults->{field} );
+#};
+
+websocket '/output' => sub {
+    my $c = shift;
+
+    $c->inactivity_timeout(60);
+
+    my $client =
+      $c->tx->remote_address . $c->tx->remote_port;    # unique identifier
+        # TODO: delete this on connection close
+
+    $c->send( { json => app->config_msg } );
+
+    #app->defaults->{announce_sub}{$client} = [];
+
+    #my $trans_ref = 0;
+    my $id = Mojo::IOLoop->recurring(
+        1 => sub {
+            my $loop = shift;
+
+            while ( my $msg = app->get_msg($client) ) {
+                $c = $c->send( { json => $msg } );
+                app->log->info("item to let client know about: $msg->{type}");
+            }
+        }
+    );
+
+    $c->on(
+        json => sub {
+            my ( $ws, $hash ) = @_;
+
+            if ( $hash->{type} eq 'set_series' ) {
+                app->set_series( $hash->{series} );
+            }
+            elsif ( $hash->{type} eq 'set_rate' ) {
+                app->set_rate( $hash->{rate} );
+            }
+
+            #app->log->debug("Message: ".dumper($hash));
+        }
+    );
+
+    $c->on(
+        finish => sub {
+            my ( $c, $code, $reason ) = @_;
+            Mojo::IOLoop->remove($id);
+            $c->app->log->debug("WebSocket closed ($code)");
+        }
+    );
+
+};
+
+helper config_msg => sub {
+    my $self = shift;
+
+    # TODO: Not all $config data needs to go to client (urls, etc).
+    #return { type => 'config', %{$config}, series => app->defaults->{series} };
+};
+
+helper get_msg => sub {
+    my ( $self, $client ) = @_;
+
+    return shift @{ app->defaults->{announce_sub}{$client} };
+};
+
+helper publish => sub {
+    my ( $self, $msg ) = @_;
+
+    push @$_, $msg for values %{ app->defaults->{announce_sub} };
+};
+
+
+helper speak => sub {
+    my ( $self, $utterance ) = @_;
+
+    app->log->info( sprintf( 'utterance: %s', $utterance ) );
+
+    if ( app->defaults->{tts_count} ge 4 ) {
+        app->log->info('tts has been throttled!');
+        return
+    }
+
+    app->defaults->{tts_count}++;
+
+    my $tmp = File::Temp->new(
+        TEMPLATE => 'temp-XXXXX',
+        DIR      => '../archive/audio',
+        SUFFIX   => '.audio'
+	);
+    my $filename = $tmp->filename;
+
+    my @args = ( '/opt/swift/bin/swift', '-o', $filename, $utterance );
+    $self->fork_call(
+        sub {
+            my $detail = {
+                type => 'audio',
+
+                #driver     => $car{driver},
+                file => $filename,
+
+                #start      => time(),
+                label => $utterance,
+                url   => app->defaults->{audio_url},
+            };
+
+            system(@args);
+            return $detail;
+        },
+        sub {
+            my ( $c, $detail ) = @_;
+
+            app->publish($detail);
+
+            #app->log->info("returned with: " . dumper(@return));
+        }
+    );
+
+};
+
+my @time = localtime;
+my $gps_file = sprintf('../data/%04d%02d%02d-%d.gps', $time[5]+1900, $time[4]+1, $time[3], $$);
+open(my $gps_fh, '>', $gps_file)
+    or die app->log->error("cannot open $gps_file for output: $!");
+$gps_fh->autoflush;
+
+my $id = Mojo::IOLoop->client(
+    { port => 2947 } => sub {
+        my ( $loop, $err, $stream ) = @_;
+
+        $stream->on(
+            read => sub {
+                my ( $stream, $bytes ) = @_;
+
+                # Process input
+                foreach my $line ( split /\n/, $bytes ) {
+                    my $sentence = decode_json($line);
+
+                    #app->log->debug(dumper($sentence));
+                    if (( $sentence->{class} eq 'TPV' ) && ( $sentence->{mode} >= 2 )) {
+                        $inputs[0]->{value} = $sentence->{speed};
+
+			print $gps_fh $line;
+                    }
+                }
+
+            }
+        );
+
+        # Write request
+        $stream->write('?WATCH={"enable":true,"json":true}');
+
+    }
+);
+
+foreach my $input (@inputs) {
+    if ( $input->{type} =~ /poll/ ) {
+        Mojo::IOLoop->recurring(
+            $input->{rate} => sub {
+                my $loop = shift;
+
+                if ( $input->{type} eq 'poll_1wire' ) {
+                    $input->{value} = get_1wire( $input->{file} );
+                }
+                else {
+                    $input->{value} = $input->{calc}
+                      ( get_reading( $input->{file}, $input->{iterations} ) );
+                }
+
+            }
+        );
+    }
+}
+
+my $rrd = RRD::Simple->new( file => "../db/cart.rrd" );
+
+Mojo::IOLoop->recurring(
+    1 => sub {
+
+        my @updates;
+        foreach my $input (@inputs) {
+            if ( $input->{value} ) {
+                app->log->debug(
+                    "update $input->{measures} val: $input->{value}");
+		my $cur_val = delete $input->{value};
+                push @updates, $input->{measures} => $cur_val; # for rrd and Misc page
+
+		if ($input->{announce} =~ /\d+/) {  # for tts
+		    if (abs($input->{prev_val} - $cur_val) >= $input->{announce}) {
+			app->log->info(sprintf('need to speak %s changed more than %d',
+                                               $input->{measures}, $input->{announce}));
+			app->speak( sprintf( $input->{phrase}, $cur_val ) );
+			$input->{prev_val} = $cur_val;
+		    }
+		}
+
+            }
+        }
+
+        $rrd->update( @updates ) if @updates;
+
+        #app->log->debug(dumper(@updates));
+    }
+);
+
+sub get_1wire {
+    my $file = shift(@_);
+
+    open( my $fh, '<', $file ) or die "Can't open $file: $!";
+    my @lines = <$fh>;
+    close $fh;
+
+    my $raw;
+    foreach my $line (@lines) {
+        if ( $line =~ /t\=(\d+)/ ) {
+            $raw = $1;
+        }
+    }
+
+    return $raw / 1000;
+}
+
+sub get_reading {
+    my ( $file, $iterations, $extractor ) = @_;
+
+    my @readings;
+    for ( my $i = 1 ; $i <= $iterations ; $i++ ) {
+        open( my $fh, '<', $file ) or die "Can't open $file: $!";
+        my $read = <$fh>;
+        close $fh;
+        push @readings, $read;
+        usleep(200);    # can't go faster than 125 as /sys is limited to 8kSPS
+    }
+
+    #print @readings;
+    my $mean = mean( \@readings );
+
+    my $stddev = stddev( \@readings );
+    if ( $stddev >= 4.0 ) {
+
+        #    if ( $stddev >= 3.5 ) {
+        app->log->debug("out of range std dev: $stddev");
+
+        #$mean = 'U';
+    }
+
+    return $mean;
+}
+
+helper reset_tts_throttle => sub {
+    my $self = shift;
+
+    app->defaults->{tts_count} = 0;
+
+    Mojo::IOLoop->timer( 30 => sub { app->reset_tts_throttle } );
+};
+
+app->reset_tts_throttle;
+
+app->start;
+
+__DATA__
+
+@@ script.html.ep
+console.log("Data Gather code running");
+
+var dgather_ws = new WebSocket('<%= url_for('output')->to_abs %>');
+
+setInterval(function () {
+        dgather_ws.send(JSON.stringify( { type: "ping" } ));
+        }, 45000
+);
+
+var dgather_config;
+dgather_ws.onmessage = function (event) {
+    var msg = $.parseJSON(event.data);
+
+    switch (msg.type) {
+        case 'audio':
+            enqueue(msg);
+            break;
+//        case 'update':
+//            dgather_page();
+//            break;
+//        case 'config':
+//            dgather_config = msg;
+//            //lboard_config.boards.Off = 'dummy series';
+//            break;
+    }
+
+};
+
+//function injectStyles(rule) {
+//  var div = $("<div />", {
+//    html: '&shy;<style>' + rule + '</style>'
+//  }).appendTo("body");
+//}
+
+//injectStyles('.position_improve.ui-btn.ui-btn-icon-right.ui-icon-carat-r { background-color: green; }');
+//injectStyles('.position_deprove.ui-btn.ui-btn-icon-right.ui-icon-carat-r { background-color: red; }');
+//injectStyles('.status_pit.ui-btn.ui-btn-icon-right.ui-icon-carat-r { background-color: orange; }');
+
+//injectStyles = null;
+
+misc_page = function () {
+
+    // TODO: this is pretty convoluted and better way should be found
+    var active_id = $("#switcher").tabs("option", "active");
+    active = $("#switcher ul>li a").eq(active_id).attr('href');
+
+    if (active != '#misc') { return }
+
+    console.log("Populating data gather page");
+
+};
+
+misc_config = function() {
+
+    // approach from: http://stackoverflow.com/questions/16015810/jquery-mobile-best-way-to-create-pop-up-and-content-dynamically
+
+    var $config = $("<div/>").popup({
+        theme : "a",
+        overlyaTheme : "a",
+        transition : "pop"
+    }).on("popupafterclose", function() {
+        //remove the popup when closing
+        $(this).remove();
+    });
+
+    $("<h2/>", {
+        text : "Data Gather Configuration"
+    }).appendTo($config);
+
+    //Create a submit button(fake)
+    $("<a>", {
+        text : "OK"
+    }).buttonMarkup({
+        inline : true,
+        icon : "check"
+    }).bind("click", function() {
+        $config.popup("close");
+        check_for_dgather_changes();
+        //that.subscribeToAsset(callback);
+    }).appendTo($config);
+
+    //create a back button
+    $("<a>", {
+        text : "Cancel",
+    }).buttonMarkup({
+        inline : true,
+        icon : "back"
+    }).bind('click', function() {
+        $config.popup('close');
+    }).appendTo($config);
+
+    $config.popup("open").trigger("create");
+};
+
+check_for_dgather_changes = function() {
+
+//    if ( $('#rate').val() != lboard_config.rate ) {
+//        lboard_ws.send(JSON.stringify( { type: "set_rate", rate: $('#rate').val() } ));             }
+//    if ( $('#lboards').val() != lboard_config.series ) {
+//        lboard_ws.send(JSON.stringify( { type: "set_series", series: $('#lboards').val() } ));    }
+
+};

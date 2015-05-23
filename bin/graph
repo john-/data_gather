@@ -1,0 +1,11 @@
+rrdtool graph cart_stats.png --title="Cart Stats" \
+	  --end now --start end-1000s \
+	  --width 1000 --height 600 \
+          DEF:speed=../db/cart.rrd:speed:AVERAGE \
+          DEF:current=../db/cart.rrd:current:AVERAGE \
+          DEF:voltage=../db/cart.rrd:voltage:AVERAGE \
+          DEF:cpu_temp=../db/cart.rrd:cpu_temp:AVERAGE \
+          DEF:case_temp=../db/cart.rrd:case_temp:AVERAGE \
+          CDEF:far=cpu_temp,1.8,*,32,+"" \
+          LINE2:cpu_temp#00a000:"D. Celsius" \
+          LINE2:far#ff0000:"D. Fahrenheit\c"
