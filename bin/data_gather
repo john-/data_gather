@@ -11,6 +11,8 @@ use Time::HiRes qw( usleep );
 use IO::Handle;
 use File::Temp;    # names for tts files
 
+my $config = plugin Config => { file => '../config/gather.conf' };
+
 app->plugin('RenderFile');
 app->plugin('CORS');
 app->plugin('ForkCall');    # used to have swift not block
@@ -18,78 +20,6 @@ app->plugin('ForkCall');    # used to have swift not block
 app->secrets( ['Specfying a secret to make the reminder go away.'] );
 
 my %last_values;
-
-my @inputs = (
-    {
-        measures => 'speed',
-        rate     => 0,
-        type     => 'stream',    # don't start a timer for this
-	announce => 'max',
-	prev_val => 0,
-	max      => 0,
-    },
-    {
-        measures   => 'voltage',
-        rate       => 5,
-        type       => 'poll_raw',
-	announce   => 1,   # speak change in one volt
-	phrase     => '<voice name="Callie">Battery at %.1f volts</voice>',
-	prev_val   => 0,
-        file       => '/sys/class/saradc/saradc_ch1',
-        iterations => 2000,
-        calc       => sub {
-            if ( $_[0] eq 'U' ) {
-                return $_[0];
-            }
-            else {
-                return sprintf( '%.1f', $_[0] * 0.0158144438587243015 );
-            }
-        },
-    },
-    {
-        measures   => 'current',
-        rate       => 5,
-        type       => 'poll_raw',
-	announce   => 100,   # speak change in one hundred milliamp
-	phrase     => '<voice name="Callie">%.1f milliamps power being consumed</voice>',
-	prev_val   => 0,
-        file       => '/sys/class/saradc/saradc_ch0',
-        iterations => 2000,
-        calc       => sub {
-            if ( $_[0] eq 'U' ) {
-                return $_[0];
-            }
-            elsif ( $_[0] <= 27.4 ) {
-                return sprintf( '%.1f', 11.91290308 * $_[0] - 66.70509526 );
-            }
-            else {
-                return sprintf( '%.1f', 10.49189781 * $_[0] - 27.39734405 );
-            }
-        },
-    },
-    {
-        measures   => 'cpu_temp',
-        rate       => 30,
-        type       => 'poll_raw',
-	announce   => 3,   # speak change in 3 degrees
-	phrase     => '<voice name="Callie">Core temp is %.1f degrees C</voice>',
-	prev_val   => 0,
-        file       => '/sys/devices/virtual/hwmon/hwmon0/temp1_input',
-        iterations => 1,
-        calc       => sub { return sprintf( '%.1f', $_[0] ) },
-    },
-    {
-        measures   => 'case_temp',
-        rate       => 30,
-        type       => 'poll_1wire',
-	announce   => 3,   # speak change in 3 degrees
-	phrase     => '<voice name="Callie">Case temp is %.2f degrees C</voice>',
-	prev_val   => 0,
-        file       => '/sys/bus/w1/devices/28-000005308e73/w1_slave',
-        iterations => 1,
-        calc       => sub { return sprintf( '%.2', $_[0]) },
-    },
-);
 
 get '/self' => sub {
     my $c = shift;
@@ -256,7 +186,7 @@ my $id = Mojo::IOLoop->client(
 
                     #app->log->debug(dumper($sentence));
                     if (( $sentence->{class} eq 'TPV' ) && ( $sentence->{mode} >= 2 )) {
-                        $inputs[0]->{value} = $sentence->{speed};
+                        $config->{inputs}->{speed}->{value} = $sentence->{speed};
 
 			print $gps_fh $line;
                     }
@@ -271,7 +201,8 @@ my $id = Mojo::IOLoop->client(
     }
 );
 
-foreach my $input (@inputs) {
+foreach my $measures (keys $config->{inputs}) {
+    my $input = $config->{inputs}->{$measures};
     if ( $input->{type} =~ /poll/ ) {
         Mojo::IOLoop->recurring(
             $input->{rate} => sub {
@@ -296,12 +227,13 @@ Mojo::IOLoop->recurring(
     1 => sub {
 
         my @updates;
-        foreach my $input (@inputs) {
+        foreach my $measures (keys $config->{inputs}) {
+            my $input = $config->{inputs}->{$measures};
             if ( $input->{value} ) {
                 app->log->debug(
-                    "update $input->{measures} val: $input->{value}");
+                    "update $measures val: $input->{value}");
 		my $cur_val = delete $input->{value};
-                push @updates, $input->{measures} => $cur_val; # for rrd and Misc page
+                push @updates, $measures => $cur_val; # for rrd and Misc page
 
 		# handle any updates via tts
 		if ($input->{announce} eq 'max') {
@@ -317,7 +249,7 @@ Mojo::IOLoop->recurring(
 		} elsif ($input->{announce} =~ /\d+/) {
 		    if (abs($input->{prev_val} - $cur_val) >= $input->{announce}) {
 			app->log->info(sprintf('need to speak %s changed more than %d',
-                                               $input->{measures}, $input->{announce}));
+                                               $measures, $input->{announce}));
 			app->speak( sprintf( $input->{phrase}, $cur_val ) );
 			$input->{prev_val} = $cur_val;
 		    }
