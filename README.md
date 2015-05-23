@@ -16,5 +16,5 @@ Dependencies
 
 Note
 ----
-This is nott intended for general use and will never be used outside environment it was created for..
+This is not intended for general use and will never be used outside environment it was created for..
 
