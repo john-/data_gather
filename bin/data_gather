@@ -99,11 +99,48 @@ websocket '/output' => sub {
 
 };
 
+websocket '/output_detail' => sub {
+    my $c = shift;
+
+    $c->inactivity_timeout(30);
+
+    my $client =
+      $c->tx->remote_address . $c->tx->remote_port;    # unique identifier
+        # TODO: delete this on connection close
+
+    #$c->send( { json => app->config_msg } );
+
+    # send initial values
+
+    #app->defaults->{announce_sub}{$client} = [];
+
+    #my $trans_ref = 0;
+    my $id = Mojo::IOLoop->recurring(
+        1 => sub {
+            my $loop = shift;
+
+            while ( my $msg = app->get_detail_msg($client) ) {
+                $c = $c->send( { json => $msg } );
+                app->log->info("item to let client know about detail: " . dumper ($msg));
+            }
+        }
+    );
+
+    $c->on(
+        finish => sub {
+            my ( $c, $code, $reason ) = @_;
+            Mojo::IOLoop->remove($id);
+            $c->app->log->debug("WebSocket for details closed ($code)");
+        }
+    );
+
+};
+
+
 helper config_msg => sub {
     my $self = shift;
 
-    # TODO: Not all $config data needs to go to client (urls, etc).
-    #return { type => 'config', %{$config}, series => app->defaults->{series} };
+    return { type => 'config', %{$config} };
 };
 
 helper get_msg => sub {
@@ -116,6 +153,19 @@ helper publish => sub {
     my ( $self, $msg ) = @_;
 
     push @$_, $msg for values %{ app->defaults->{announce_sub} };
+};
+
+
+helper get_detail_msg => sub {
+    my ( $self, $client ) = @_;
+
+    return shift @{ app->defaults->{announce_detail_sub}{$client} };
+};
+
+helper publish_detail => sub {
+    my ( $self, $msg ) = @_;
+
+    push @$_, $msg for values %{ app->defaults->{announce_detail_sub} };
 };
 
 
@@ -233,9 +283,11 @@ Mojo::IOLoop->recurring(
                 app->log->debug(
                     "update $measures val: $input->{value}");
 		my $cur_val = delete $input->{value};
-                push @updates, $measures => $cur_val; # for rrd and Misc page
+                push @updates, $measures => $cur_val; # for rrd update
+                app->publish_detail( { $measures . '_val' => $cur_val } );
 
-		# handle any updates via tts
+
+		# handle any updates that require tts
 		if ($input->{announce} eq 'max') {
 		    if ($cur_val >= $input->{max}) {
 			$input->{max} = $cur_val;
@@ -343,10 +395,10 @@ dgather_ws.onmessage = function (event) {
 //        case 'update':
 //            dgather_page();
 //            break;
-//        case 'config':
-//            dgather_config = msg;
-//            //lboard_config.boards.Off = 'dummy series';
-//            break;
+        case 'config':
+            dgather_config = msg;
+            //console.log('got the config: ' + dgather_config.inputs.speed.type);
+            break;
     }
 
 };
@@ -372,6 +424,49 @@ misc_page = function () {
     if (active != '#misc') { return }
 
     console.log("Populating data gather page");
+
+    // $('#misc').empty();   // probably need to empty this when leaving the page or don't bother starting over
+    $('#misc').empty().append('<div class="ui-grid-c" id="readings"</div>');
+
+    $.each(dgather_config.inputs, function(key, val) {
+        //$('#misc').append('<p>' + key + '</p>');
+
+        $('<div class="ui-block-a">').append(
+            $('<div>', {
+                class: 'ui-bar ui-bar-a',
+                text: key,
+        })).appendTo('#readings');
+
+        $('<div class="ui-block-b">').append(
+            $('<div>', {
+                class: 'ui-bar ui-bar-a',
+                text: 'value',
+                id: key + '_val',
+        })).appendTo('#readings');
+
+        $('<div class="ui-block-c">').append(
+            $('<div>', {
+                class: 'ui-bar ui-bar-a',
+                text: 'min',
+                id: key + '_min',
+        })).appendTo('#readings');
+
+        $('<div class="ui-block-d">').append(
+            $('<div>', {
+                class: 'ui-bar ui-bar-a',
+                text: 'max',
+                id: key + '_max',
+        })).appendTo('#readings');
+    });
+
+    var dgather_detail_ws = new WebSocket('<%= url_for('output_detail')->to_abs %>');
+
+    dgather_detail_ws.onmessage = function (event) {
+        var msg = $.parseJSON(event.data);
+
+        var measures = Object.keys(msg)[0];
+        $('#' + measures).text(msg[measures]);
+    }
 
 };
 
