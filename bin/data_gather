@@ -212,8 +212,8 @@ helper speak => sub {
             my $detail = {
                 type => 'audio',
 
-                #driver     => $car{driver},
-                file => $filename,
+                volume => $config->{volume},
+                file   => $filename,
 
                 #start      => time(),
                 label => $utterance,
