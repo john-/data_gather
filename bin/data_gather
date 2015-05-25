@@ -19,6 +19,7 @@ app->plugin('ForkCall');    # used to have swift not block
 
 app->secrets( ['Specfying a secret to make the reminder go away.'] );
 
+#my %announce_detail_sub;
 my %last_values;
 
 get '/self' => sub {
@@ -112,7 +113,9 @@ websocket '/output_detail' => sub {
 
     # send initial values
 
-    #app->defaults->{announce_sub}{$client} = [];
+    #app->log->info("Setting notice to plublish for $client");
+    #app->defaults->{announce_detail_sub}{$client} = [];
+    #$announce_detail_sub{$client} = [];
 
     #my $trans_ref = 0;
     my $id = Mojo::IOLoop->recurring(
@@ -121,7 +124,17 @@ websocket '/output_detail' => sub {
 
             while ( my $msg = app->get_detail_msg($client) ) {
                 $c = $c->send( { json => $msg } );
-                app->log->info("item to let client know about detail: " . dumper ($msg));
+                app->log->info("item to let client $client know about detail: " . dumper ($msg));
+            }
+        }
+    );
+
+    $c->on(
+        json => sub {
+            my ( $ws, $hash ) = @_;
+
+            if ( $hash->{type} eq 'close' ) {
+		$ws->finish;
             }
         }
     );
@@ -130,10 +143,10 @@ websocket '/output_detail' => sub {
         finish => sub {
             my ( $c, $code, $reason ) = @_;
             Mojo::IOLoop->remove($id);
-            $c->app->log->debug("WebSocket for details closed ($code)");
+	    delete app->defaults->{announce_detail_sub}{$client};
+            $c->app->log->debug("WebSocket for details closed ($code) client $client");
         }
     );
-
 };
 
 
@@ -159,12 +172,17 @@ helper publish => sub {
 helper get_detail_msg => sub {
     my ( $self, $client ) = @_;
 
+    #if (!exists $announce_detail_sub{$client}) { return };
+
+    #return shift @{ $announce_detail_sub{$client} };
+
     return shift @{ app->defaults->{announce_detail_sub}{$client} };
 };
 
 helper publish_detail => sub {
     my ( $self, $msg ) = @_;
 
+    #push @$_, $msg for values %announce_detail_sub;
     push @$_, $msg for values %{ app->defaults->{announce_detail_sub} };
 };
 
@@ -295,7 +313,7 @@ Mojo::IOLoop->recurring(
 		        my $max_announce =
                             sprintf( 'New maximimum speed of %.2f meters per second', $input->{max} );
 			app->log->info($max_announce);
-			IO::Loop->timer(4 => app->speak( $max_announce ));
+			Mojo::IOLoop->timer(4 => sub { app->speak( $max_announce ) });
                     }
 		    $input->{prev_val} = $cur_val;
 		} elsif ($input->{announce} =~ /\d+/) {
@@ -415,13 +433,21 @@ dgather_ws.onmessage = function (event) {
 
 //injectStyles = null;
 
+var dgather_detail_ws;
+
 misc_page = function () {
 
     // TODO: this is pretty convoluted and better way should be found
+    //       Actually, there might not be a need for this.  To be verified. (TODO)
     var active_id = $("#switcher").tabs("option", "active");
     active = $("#switcher ul>li a").eq(active_id).attr('href');
 
-    if (active != '#misc') { return }
+    if (active != '#misc') {
+        console.log('Execute data gather cleanup');
+        dgather_detail_ws.send(JSON.stringify( { type: "close" } ));
+        //dgather_detail_ws.close();
+        return
+    }
 
     console.log("Populating data gather page");
 
@@ -459,7 +485,7 @@ misc_page = function () {
         })).appendTo('#readings');
     });
 
-    var dgather_detail_ws = new WebSocket('<%= url_for('output_detail')->to_abs %>');
+    dgather_detail_ws = new WebSocket('<%= url_for('output_detail')->to_abs %>');
 
     dgather_detail_ws.onmessage = function (event) {
         var msg = $.parseJSON(event.data);
