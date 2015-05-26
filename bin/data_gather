@@ -4,7 +4,8 @@ use Mojolicious::Lite;
 use Mojo::IOLoop;
 use Mojo::JSON qw(decode_json);
 use Mojo::Util qw(dumper);
-use RRD::Simple;
+use Mojo::Pg;
+#use RRD::Simple;
 
 use Statistics::Basic qw(:all);
 use Time::HiRes qw( usleep );
@@ -18,6 +19,9 @@ app->plugin('CORS');
 app->plugin('ForkCall');    # used to have swift not block
 
 app->secrets( ['Specfying a secret to make the reminder go away.'] );
+
+my $pg = Mojo::Pg->new('postgresql://script@/cart');
+my $db = $pg->db;
 
 #my %announce_detail_sub;
 my %last_values;
@@ -289,7 +293,7 @@ foreach my $measures (keys $config->{inputs}) {
     }
 }
 
-my $rrd = RRD::Simple->new( file => "../db/cart.rrd" );
+#my $rrd = RRD::Simple->new( file => "../db/cart.rrd" );
 
 Mojo::IOLoop->recurring(
     1 => sub {
@@ -301,7 +305,7 @@ Mojo::IOLoop->recurring(
                 app->log->debug(
                     "update $measures val: $input->{value}");
 		my $cur_val = delete $input->{value};
-                push @updates, $measures => $cur_val; # for rrd update
+                push @updates, { $measures => $cur_val }; # for rrd update
                 app->publish_detail( { $measures . '_val' => $cur_val } );
 
 
@@ -328,9 +332,11 @@ Mojo::IOLoop->recurring(
             }
         }
 
-        $rrd->update( @updates ) if @updates;
-
-        #app->log->debug(dumper(@updates));
+	foreach my $row (@updates) {
+	    my ($input, $value) = each(%$row);
+            $db->query('insert into sensor_history (input, value) values (?, ?)',
+                $input, $value);
+        }
     }
 );
 
