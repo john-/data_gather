@@ -24,7 +24,7 @@ my $pg = Mojo::Pg->new('postgresql://script@/cart');
 my $db = $pg->db;
 
 #my %announce_detail_sub;
-my %last_values;
+my @min_max_values;
 
 get '/self' => sub {
     my $c = shift;
@@ -113,8 +113,9 @@ websocket '/output_detail' => sub {
       $c->tx->remote_address . $c->tx->remote_port;    # unique identifier
         # TODO: delete this on connection close
 
-    #$c->send( { json => app->config_msg } );
-
+    foreach my $input (@min_max_values) {
+        $c->send( { json => $input } );
+    }
     # send initial values
 
     #app->log->info("Setting notice to plublish for $client");
@@ -392,7 +393,35 @@ helper reset_tts_throttle => sub {
     Mojo::IOLoop->timer( 30 => sub { app->reset_tts_throttle } );
 };
 
+sub load_min_max {
+
+    #$db->query('select * from sensor_history')->hashes->map(sub { $_->{input} })->join("\n")->say;
+    Mojo::IOLoop->delay(
+        sub {
+	    my $delay = shift;
+	    #$db->query('select * from sensor_history' => $delay->begin);
+	    $db->query('select input, min(value), max(value) from sensor_history where recorded_at > now() - interval \'3 days\' group by input' => $delay->begin);
+        },
+        sub {
+	    my ($delay, $err, $results) = @_;
+	    foreach my $item (@{$results->hashes->to_array}) {
+		app->log->debug(dumper($item));
+	        #my ($input, $value) = each(%$row);
+
+		push @min_max_values, { $item->{input} . '_min' => $item->{min} };
+		push @min_max_values, { $item->{input} . '_max' => $item->{max} }
+
+                #app->publish_detail( { $item->{input} . '_min' => $item->{min} } );
+                #app->publish_detail( { $item->{input} . '_max' => $item->{max} } );
+	    }
+	    #$results->hashes->map(sub { $_->{input} })->join("\n")->say;
+        }
+    )->wait;
+}
+
 app->reset_tts_throttle;
+
+load_min_max;
 
 app->start;
 
