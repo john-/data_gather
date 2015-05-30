@@ -5,7 +5,8 @@ use Mojo::IOLoop;
 use Mojo::JSON qw(decode_json);
 use Mojo::Util qw(dumper);
 use Mojo::Pg;
-#use RRD::Simple;
+use Mojo::Pg::PubSub;
+use Mojo::JSON qw(decode_json encode_json);
 
 use Statistics::Basic qw(:all);
 use Time::HiRes qw( usleep );
@@ -20,8 +21,8 @@ app->plugin('ForkCall');    # used to have swift not block
 
 app->secrets( ['Specfying a secret to make the reminder go away.'] );
 
-my $pg = Mojo::Pg->new('postgresql://script@/cart');
-my $db = $pg->db;
+#my $pg = Mojo::Pg->new('postgresql://script@/cart');
+#my $db = $pg->db;
 
 #my %announce_detail_sub;
 my @min_max_values;
@@ -67,28 +68,23 @@ websocket '/output' => sub {
 
     #app->defaults->{announce_sub}{$client} = [];
 
-    #my $trans_ref = 0;
-    my $id = Mojo::IOLoop->recurring(
-        1 => sub {
-            my $loop = shift;
-
-            while ( my $msg = app->get_msg($client) ) {
-                $c = $c->send( { json => $msg } );
-                app->log->info("item to let client know about: $msg->{type}");
-            }
-        }
-    );
+    my $cb = $c->pubsub->listen(sensor_msg => sub {
+        my ($pubsub, $payload) = @_;
+        my $msg = decode_json($payload);
+        $c = $c->send( { json => $msg } );
+        app->log->debug("item to let client know about (pubsub): $msg->{type}");
+    });
 
     $c->on(
         json => sub {
             my ( $ws, $hash ) = @_;
 
-            if ( $hash->{type} eq 'set_series' ) {
-                app->set_series( $hash->{series} );
-            }
-            elsif ( $hash->{type} eq 'set_rate' ) {
-                app->set_rate( $hash->{rate} );
-            }
+            #if ( $hash->{type} eq 'set_series' ) {
+            #    app->set_series( $hash->{series} );
+            #}
+            #elsif ( $hash->{type} eq 'set_rate' ) {
+            #    app->set_rate( $hash->{rate} );
+            #}
 
             #app->log->debug("Message: ".dumper($hash));
         }
@@ -97,7 +93,7 @@ websocket '/output' => sub {
     $c->on(
         finish => sub {
             my ( $c, $code, $reason ) = @_;
-            Mojo::IOLoop->remove($id);
+            $c->pubsub->unlisten( sensor_msg => $cb );
             $c->app->log->debug("WebSocket closed ($code)");
         }
     );
@@ -122,17 +118,12 @@ websocket '/output_detail' => sub {
     #app->defaults->{announce_detail_sub}{$client} = [];
     #$announce_detail_sub{$client} = [];
 
-    #my $trans_ref = 0;
-    my $id = Mojo::IOLoop->recurring(
-        1 => sub {
-            my $loop = shift;
-
-            while ( my $msg = app->get_detail_msg($client) ) {
-                $c = $c->send( { json => $msg } );
-                app->log->info("item to let client $client know about detail: " . dumper ($msg));
-            }
-        }
-    );
+    my $cb = $c->pubsub->listen(sensor_detail_msg => sub {
+        my ($pubsub, $payload) = @_;
+        my $msg = decode_json($payload);
+        $c = $c->send( { json => $msg } );
+        #app->log->debug("item to let client know about (pubsub/detail)".dumper($msg));
+    });
 
     $c->on(
         json => sub {
@@ -147,11 +138,21 @@ websocket '/output_detail' => sub {
     $c->on(
         finish => sub {
             my ( $c, $code, $reason ) = @_;
-            Mojo::IOLoop->remove($id);
-	    delete app->defaults->{announce_detail_sub}{$client};
+            $c->pubsub->unlisten( sensor_detail_msg => $cb );
             $c->app->log->debug("WebSocket for details closed ($code) client $client");
         }
     );
+};
+
+helper pg => sub {
+    state $pg = Mojo::Pg->new('postgresql://script@/cart')
+	or app->log->error('Could not connect to database');
+};
+
+helper pubsub => sub {
+    my $self = shift;
+
+    state $pubsub = Mojo::Pg::PubSub->new(pg => $self->pg);
 };
 
 
@@ -161,35 +162,35 @@ helper config_msg => sub {
     return { type => 'config', %{$config} };
 };
 
-helper get_msg => sub {
-    my ( $self, $client ) = @_;
+#helper get_msg => sub {
+#    my ( $self, $client ) = @_;
 
-    return shift @{ app->defaults->{announce_sub}{$client} };
-};
+#    return shift @{ app->defaults->{announce_sub}{$client} };
+#};
 
-helper publish => sub {
-    my ( $self, $msg ) = @_;
+#helper publish => sub {
+#    my ( $self, $msg ) = @_;
 
-    push @$_, $msg for values %{ app->defaults->{announce_sub} };
-};
+#    push @$_, $msg for values %{ app->defaults->{announce_sub} };
+#};
 
 
-helper get_detail_msg => sub {
-    my ( $self, $client ) = @_;
+#helper get_detail_msg => sub {
+#    my ( $self, $client ) = @_;
 
     #if (!exists $announce_detail_sub{$client}) { return };
 
     #return shift @{ $announce_detail_sub{$client} };
 
-    return shift @{ app->defaults->{announce_detail_sub}{$client} };
-};
+#    return shift @{ app->defaults->{announce_detail_sub}{$client} };
+#};
 
-helper publish_detail => sub {
-    my ( $self, $msg ) = @_;
+#helper publish_detail => sub {
+#    my ( $self, $msg ) = @_;
 
     #push @$_, $msg for values %announce_detail_sub;
-    push @$_, $msg for values %{ app->defaults->{announce_detail_sub} };
-};
+#    push @$_, $msg for values %{ app->defaults->{announce_detail_sub} };
+#};
 
 
 helper speak => sub {
@@ -231,7 +232,8 @@ helper speak => sub {
         sub {
             my ( $c, $detail ) = @_;
 
-            app->publish($detail);
+	    $c->pubsub->notify(sensor_msg => encode_json( $detail ));
+            #app->publish($detail);
 
             #app->log->info("returned with: " . dumper(@return));
         }
@@ -307,7 +309,9 @@ Mojo::IOLoop->recurring(
                     "update $measures val: $input->{value}");
 		my $cur_val = delete $input->{value};
                 push @updates, { $measures => $cur_val }; # for rrd update
-                app->publish_detail( { $measures . '_val' => $cur_val } );
+		app->pubsub->notify(
+                    sensor_detail_msg => encode_json( { $measures . '_val' => $cur_val } ));
+                #app->publish_detail( { $measures . '_val' => $cur_val } );
 
 
 		# handle any updates that require tts
@@ -335,7 +339,7 @@ Mojo::IOLoop->recurring(
 
 	foreach my $row (@updates) {
 	    my ($input, $value) = each(%$row);
-            $db->query('insert into sensor_history (input, value) values (?, ?)',
+            app->pg->db->query('insert into sensor_history (input, value) values (?, ?)',
                 $input, $value);
         }
     }
@@ -400,12 +404,12 @@ sub load_min_max {
         sub {
 	    my $delay = shift;
 	    #$db->query('select * from sensor_history' => $delay->begin);
-	    $db->query('select input, min(value), max(value) from sensor_history where recorded_at > now() - interval \'3 days\' group by input' => $delay->begin);
+	    app->pg->db->query('select input, min(value), max(value) from sensor_history where recorded_at > now() - interval \'3 days\' group by input' => $delay->begin);
         },
         sub {
 	    my ($delay, $err, $results) = @_;
 	    foreach my $item (@{$results->hashes->to_array}) {
-		app->log->debug(dumper($item));
+		#app->log->debug(dumper($item));
 	        #my ($input, $value) = each(%$row);
 
 		push @min_max_values, { $item->{input} . '_min' => $item->{min} };
