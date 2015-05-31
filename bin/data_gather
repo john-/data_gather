@@ -257,13 +257,25 @@ Mojo::IOLoop->recurring(
 
         my @updates;
         foreach my $measures ( keys $config->{inputs} ) {
-            my $input = $config->{inputs}->{$measures};
+            my $input = $config->{inputs}{$measures};
             if ( $input->{value} ) {
                 app->log->debug("update to $measures: $input->{value}");
                 my $cur_val = delete $input->{value};
-                push @updates, { $measures => $cur_val };    # for rrd update
+                push @updates, { $measures => $cur_val };    # for db update
+
                 app->pubsub->notify( sensor_detail_msg =>
                       encode_json( { $measures . '_val' => $cur_val } ) );
+
+		if ( (!exists $input->{min}) || ($cur_val < $input->{min}) ) {
+		    $input->{min} = $cur_val;
+                    app->pubsub->notify( sensor_detail_msg =>
+                        encode_json( { $measures . '_min' => $cur_val } ) );
+		}
+		if ( (!exists $input->{max}) || ($cur_val > $input->{max}) ) {
+		    $input->{max} = $cur_val;
+                    app->pubsub->notify( sensor_detail_msg =>
+                        encode_json( { $measures . '_max' => $cur_val } ) );
+		}
 
                 # handle any updates that require tts
                 if ( $input->{announce} eq 'max' ) {
