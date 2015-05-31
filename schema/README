@@ -1,0 +1,16 @@
+The 'create_db' file is to generate rrd database.  There migration to postgres under way which will obsolete that approach.
+
+Script to create DB is here but DB will not be specific to data_gather.
+
+sudo su - postgres
+
+"script" role connects to db with mapping from local user.  See:
+
+/etc/postgresql/9.3/main/pg_hba.conf
+/etc/postgresql/9.3/main/pg_ident.conf
+
+get min/max sensor values for recent period:
+
+select input, min(value), max(value) from sensor_history where recorded_at > now() - interval '1 hour' group by input;
+
+

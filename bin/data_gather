@@ -21,12 +21,6 @@ app->plugin('ForkCall');    # used to have swift not block
 
 app->secrets( ['Specfying a secret to make the reminder go away.'] );
 
-#my $pg = Mojo::Pg->new('postgresql://script@/cart');
-#my $db = $pg->db;
-
-#my %announce_detail_sub;
-my @min_max_values;
-
 get '/self' => sub {
     my $c = shift;
 
@@ -49,12 +43,6 @@ get '/audio' => sub {
     );
 };
 
-#get '/standings' => sub {
-#    my $c = shift;
-
-#    $c->render( json => app->defaults->{field} );
-#};
-
 websocket '/output' => sub {
     my $c = shift;
 
@@ -66,25 +54,19 @@ websocket '/output' => sub {
 
     $c->send( { json => app->config_msg } );
 
-    #app->defaults->{announce_sub}{$client} = [];
-
-    my $cb = $c->pubsub->listen(sensor_msg => sub {
-        my ($pubsub, $payload) = @_;
-        my $msg = decode_json($payload);
-        $c = $c->send( { json => $msg } );
-        app->log->debug("item to let client know about (pubsub): $msg->{type}");
-    });
+    my $cb = $c->pubsub->listen(
+        sensor_msg => sub {
+            my ( $pubsub, $payload ) = @_;
+            my $msg = decode_json($payload);
+            $c = $c->send( { json => $msg } );
+            app->log->debug(
+                "item to let client know about (pubsub): $msg->{type}");
+        }
+    );
 
     $c->on(
         json => sub {
             my ( $ws, $hash ) = @_;
-
-            #if ( $hash->{type} eq 'set_series' ) {
-            #    app->set_series( $hash->{series} );
-            #}
-            #elsif ( $hash->{type} eq 'set_rate' ) {
-            #    app->set_rate( $hash->{rate} );
-            #}
 
             #app->log->debug("Message: ".dumper($hash));
         }
@@ -109,28 +91,30 @@ websocket '/output_detail' => sub {
       $c->tx->remote_address . $c->tx->remote_port;    # unique identifier
         # TODO: delete this on connection close
 
-    foreach my $input (@min_max_values) {
-        $c->send( { json => $input } );
-    }
     # send initial values
+    foreach my $input ( keys $config->{inputs} ) {
+        $c->send(
+            { json => { "${input}_min" => $config->{inputs}{$input}{min} } } );
+        $c->send(
+            { json => { "${input}_max" => $config->{inputs}{$input}{max} } } );
+    }
 
-    #app->log->info("Setting notice to plublish for $client");
-    #app->defaults->{announce_detail_sub}{$client} = [];
-    #$announce_detail_sub{$client} = [];
+    my $cb = $c->pubsub->listen(
+        sensor_detail_msg => sub {
+            my ( $pubsub, $payload ) = @_;
+            my $msg = decode_json($payload);
+            $c = $c->send( { json => $msg } );
 
-    my $cb = $c->pubsub->listen(sensor_detail_msg => sub {
-        my ($pubsub, $payload) = @_;
-        my $msg = decode_json($payload);
-        $c = $c->send( { json => $msg } );
-        #app->log->debug("item to let client know about (pubsub/detail)".dumper($msg));
-    });
+ #app->log->debug("item to let client know about (pubsub/detail)".dumper($msg));
+        }
+    );
 
     $c->on(
         json => sub {
             my ( $ws, $hash ) = @_;
 
             if ( $hash->{type} eq 'close' ) {
-		$ws->finish;
+                $ws->finish;
             }
         }
     );
@@ -139,59 +123,28 @@ websocket '/output_detail' => sub {
         finish => sub {
             my ( $c, $code, $reason ) = @_;
             $c->pubsub->unlisten( sensor_detail_msg => $cb );
-            $c->app->log->debug("WebSocket for details closed ($code) client $client");
+            $c->app->log->debug(
+                "WebSocket for details closed ($code) client $client");
         }
     );
 };
 
 helper pg => sub {
     state $pg = Mojo::Pg->new('postgresql://script@/cart')
-	or app->log->error('Could not connect to database');
+      or app->log->error('Could not connect to database');
 };
 
 helper pubsub => sub {
     my $self = shift;
 
-    state $pubsub = Mojo::Pg::PubSub->new(pg => $self->pg);
+    state $pubsub = Mojo::Pg::PubSub->new( pg => $self->pg );
 };
-
 
 helper config_msg => sub {
     my $self = shift;
 
     return { type => 'config', %{$config} };
 };
-
-#helper get_msg => sub {
-#    my ( $self, $client ) = @_;
-
-#    return shift @{ app->defaults->{announce_sub}{$client} };
-#};
-
-#helper publish => sub {
-#    my ( $self, $msg ) = @_;
-
-#    push @$_, $msg for values %{ app->defaults->{announce_sub} };
-#};
-
-
-#helper get_detail_msg => sub {
-#    my ( $self, $client ) = @_;
-
-    #if (!exists $announce_detail_sub{$client}) { return };
-
-    #return shift @{ $announce_detail_sub{$client} };
-
-#    return shift @{ app->defaults->{announce_detail_sub}{$client} };
-#};
-
-#helper publish_detail => sub {
-#    my ( $self, $msg ) = @_;
-
-    #push @$_, $msg for values %announce_detail_sub;
-#    push @$_, $msg for values %{ app->defaults->{announce_detail_sub} };
-#};
-
 
 helper speak => sub {
     my ( $self, $utterance ) = @_;
@@ -200,7 +153,7 @@ helper speak => sub {
 
     if ( app->defaults->{tts_count} ge 4 ) {
         app->log->info('tts has been throttled!');
-        return
+        return;
     }
 
     app->defaults->{tts_count}++;
@@ -209,21 +162,18 @@ helper speak => sub {
         TEMPLATE => 'temp-XXXXX',
         DIR      => '../archive/audio',
         SUFFIX   => '.audio'
-	);
+    );
     my $filename = $tmp->filename;
 
     my @args = ( '/opt/swift/bin/swift', '-o', $filename, $utterance );
     $self->fork_call(
         sub {
             my $detail = {
-                type => 'audio',
-
+                type   => 'audio',
                 volume => $config->{volume},
                 file   => $filename,
-
-                #start      => time(),
-                label => $utterance,
-                url   => app->defaults->{audio_url},
+                label  => $utterance,
+                url    => app->defaults->{audio_url},
             };
 
             system(@args);
@@ -232,19 +182,21 @@ helper speak => sub {
         sub {
             my ( $c, $detail ) = @_;
 
-	    $c->pubsub->notify(sensor_msg => encode_json( $detail ));
-            #app->publish($detail);
-
-            #app->log->info("returned with: " . dumper(@return));
+            $c->pubsub->notify( sensor_msg => encode_json($detail) );
         }
     );
 
 };
 
-my @time = localtime;
-my $gps_file = sprintf('../data/%04d%02d%02d-%d.gps', $time[5]+1900, $time[4]+1, $time[3], $$);
-open(my $gps_fh, '>', $gps_file)
-    or die app->log->error("cannot open $gps_file for output: $!");
+my @time     = localtime;
+my $gps_file = sprintf(
+    '../data/%04d%02d%02d-%d.gps',
+    $time[5] + 1900,
+    $time[4] + 1,
+    $time[3], $$
+);
+open( my $gps_fh, '>', $gps_file )
+  or die app->log->error("cannot open $gps_file for output: $!");
 $gps_fh->autoflush;
 
 my $id = Mojo::IOLoop->client(
@@ -260,10 +212,13 @@ my $id = Mojo::IOLoop->client(
                     my $sentence = decode_json($line);
 
                     #app->log->debug(dumper($sentence));
-                    if (( $sentence->{class} eq 'TPV' ) && ( $sentence->{mode} >= 2 )) {
-                        $config->{inputs}->{speed}->{value} = $sentence->{speed};
+                    if (   ( $sentence->{class} eq 'TPV' )
+                        && ( $sentence->{mode} >= 2 ) )
+                    {
+                        $config->{inputs}->{speed}->{value} =
+                          $sentence->{speed};
 
-			print $gps_fh $line;
+                        print $gps_fh $line;
                     }
                 }
 
@@ -276,7 +231,7 @@ my $id = Mojo::IOLoop->client(
     }
 );
 
-foreach my $measures (keys $config->{inputs}) {
+foreach my $measures ( keys $config->{inputs} ) {
     my $input = $config->{inputs}->{$measures};
     if ( $input->{type} =~ /poll/ ) {
         Mojo::IOLoop->recurring(
@@ -296,51 +251,57 @@ foreach my $measures (keys $config->{inputs}) {
     }
 }
 
-#my $rrd = RRD::Simple->new( file => "../db/cart.rrd" );
-
 Mojo::IOLoop->recurring(
     1 => sub {
 
         my @updates;
-        foreach my $measures (keys $config->{inputs}) {
+        foreach my $measures ( keys $config->{inputs} ) {
             my $input = $config->{inputs}->{$measures};
             if ( $input->{value} ) {
-                app->log->debug(
-                    "update $measures val: $input->{value}");
-		my $cur_val = delete $input->{value};
-                push @updates, { $measures => $cur_val }; # for rrd update
-		app->pubsub->notify(
-                    sensor_detail_msg => encode_json( { $measures . '_val' => $cur_val } ));
-                #app->publish_detail( { $measures . '_val' => $cur_val } );
+                app->log->debug("update to $measures: $input->{value}");
+                my $cur_val = delete $input->{value};
+                push @updates, { $measures => $cur_val };    # for rrd update
+                app->pubsub->notify( sensor_detail_msg =>
+                      encode_json( { $measures . '_val' => $cur_val } ) );
 
-
-		# handle any updates that require tts
-		if ($input->{announce} eq 'max') {
-		    if ($cur_val >= $input->{max}) {
-			$input->{max} = $cur_val;
-		    } elsif ($input->{prev_val} == $input->{max}) {
-		        my $max_announce =
-                            sprintf( 'New maximimum speed of %.2f meters per second', $input->{max} );
-			app->log->info($max_announce);
-			Mojo::IOLoop->timer(4 => sub { app->speak( $max_announce ) });
+                # handle any updates that require tts
+                if ( $input->{announce} eq 'max' ) {
+                    if ( $cur_val >= $input->{max} ) {
+                        $input->{max} = $cur_val;
                     }
-		    $input->{prev_val} = $cur_val;
-		} elsif ($input->{announce} =~ /\d+/) {
-		    if (abs($input->{prev_val} - $cur_val) >= $input->{announce}) {
-			app->log->info(sprintf('need to speak %s changed more than %d',
-                                               $measures, $input->{announce}));
-			app->speak( sprintf( $input->{phrase}, $cur_val ) );
-			$input->{prev_val} = $cur_val;
-		    }
-		}
+                    elsif ( $input->{val} == $input->{max} ) {
+                        my $max_announce =
+                          sprintf(
+                            'New maximimum speed of %.2f meters per second',
+                            $input->{max} );
+                        app->log->info($max_announce);
+                        Mojo::IOLoop->timer(
+                            4 => sub { app->speak($max_announce) } );
+                    }
+                    $input->{val} = $cur_val;
+                }
+                elsif ( $input->{announce} =~ /\d+/ ) {
+                    if ( abs( $input->{val} - $cur_val ) >= $input->{announce} )
+                    {
+                        app->log->info(
+                            sprintf(
+                                'need to speak %s changed more than %d',
+                                $measures, $input->{announce}
+                            )
+                        );
+                        app->speak( sprintf( $input->{phrase}, $cur_val ) );
+                        $input->{val} = $cur_val;
+                    }
+                }
 
             }
         }
 
-	foreach my $row (@updates) {
-	    my ($input, $value) = each(%$row);
-            app->pg->db->query('insert into sensor_history (input, value) values (?, ?)',
-                $input, $value);
+        foreach my $row (@updates) {
+            my ( $input, $value ) = each(%$row);
+            app->pg->db->query(
+                'insert into sensor_history (input, value) values (?, ?)',
+                $input, $value );
         }
     }
 );
@@ -399,26 +360,19 @@ helper reset_tts_throttle => sub {
 
 sub load_min_max {
 
-    #$db->query('select * from sensor_history')->hashes->map(sub { $_->{input} })->join("\n")->say;
     Mojo::IOLoop->delay(
         sub {
-	    my $delay = shift;
-	    #$db->query('select * from sensor_history' => $delay->begin);
-	    app->pg->db->query('select input, min(value), max(value) from sensor_history where recorded_at > now() - interval \'3 days\' group by input' => $delay->begin);
+            my $delay = shift;
+            app->pg->db->query(
+'select input, min(value), max(value) from sensor_history where recorded_at > now() - interval \'3 days\' group by input'
+                  => $delay->begin );
         },
         sub {
-	    my ($delay, $err, $results) = @_;
-	    foreach my $item (@{$results->hashes->to_array}) {
-		#app->log->debug(dumper($item));
-	        #my ($input, $value) = each(%$row);
-
-		push @min_max_values, { $item->{input} . '_min' => $item->{min} };
-		push @min_max_values, { $item->{input} . '_max' => $item->{max} }
-
-                #app->publish_detail( { $item->{input} . '_min' => $item->{min} } );
-                #app->publish_detail( { $item->{input} . '_max' => $item->{max} } );
-	    }
-	    #$results->hashes->map(sub { $_->{input} })->join("\n")->say;
+            my ( $delay, $err, $results ) = @_;
+            foreach my $item ( @{ $results->hashes->to_array } ) {
+                $config->{inputs}{ $item->{input} }{min} = $item->{min};
+                $config->{inputs}{ $item->{input} }{max} = $item->{max};
+            }
         }
     )->wait;
 }
