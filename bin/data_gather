@@ -215,8 +215,8 @@ my $id = Mojo::IOLoop->client(
                     if (   ( $sentence->{class} eq 'TPV' )
                         && ( $sentence->{mode} >= 2 ) )
                     {
-                        $config->{inputs}->{speed}->{value} =
-                          $sentence->{speed};
+                        $config->{inputs}{speed}{value} =
+                          $config->{inputs}{speed}{calc}($sentence->{speed});
 
                         print $gps_fh $line;
                     }
@@ -239,7 +239,8 @@ foreach my $measures ( keys $config->{inputs} ) {
                 my $loop = shift;
 
                 if ( $input->{type} eq 'poll_1wire' ) {
-                    $input->{value} = get_1wire( $input->{file} );
+                    $input->{value} = $input->{calc}
+		      ( get_1wire( $input->{file} ) );
                 }
                 else {
                     $input->{value} = $input->{calc}
@@ -272,7 +273,7 @@ Mojo::IOLoop->recurring(
                     elsif ( $input->{val} == $input->{max} ) {
                         my $max_announce =
                           sprintf(
-                            'New maximimum speed of %.2f meters per second',
+                            'New maximimum speed of %.2f miles per hour',
                             $input->{max} );
                         app->log->info($max_announce);
                         Mojo::IOLoop->timer(
