@@ -88,7 +88,7 @@ websocket '/output' => sub {
 websocket '/output_detail' => sub {
     my $c = shift;
 
-    $c->inactivity_timeout(30);
+    $c->inactivity_timeout(60);
 
     my $client =
       $c->tx->remote_address . $c->tx->remote_port;    # unique identifier
