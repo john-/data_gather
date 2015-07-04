@@ -3,6 +3,7 @@ The 'create_db' file is to generate rrd database.  There migration to postgres u
 Script to create DB is here but DB will not be specific to data_gather.
 
 sudo su - postgres
+psql cart
 
 "script" role connects to db with mapping from local user.  See:
 
@@ -13,4 +14,7 @@ get min/max sensor values for recent period:
 
 select input, min(value), max(value) from sensor_history where recorded_at > now() - interval '1 hour' group by input;
 
+Delete speed info:
+
+delete from sensor_history where input='speed' and recorded_at >= date '2015-06-08';
 
