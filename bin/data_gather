@@ -14,9 +14,11 @@ use Time::HiRes qw( usleep );
 use IO::Handle;
 use File::Temp;    # names for tts files
 
-my $config = plugin Config => { file => '../config/gather.conf' };
+use FindBin qw($Bin);
 
-app->log( Mojo::Log->new( path => '../log/data_gather.log' ) );
+my $config = plugin Config => { file => "$Bin/../config/gather.conf" };
+
+app->log( Mojo::Log->new( path => "$Bin/../log/data_gather.log" ) );
 
 app->plugin('RenderFile');
 app->plugin('CORS');
@@ -41,7 +43,7 @@ get '/audio' => sub {
 
     # Open file in browser(do not show save dialog)
     $c->render_file(
-        'filepath'            => "../archive/$file",
+        'filepath'            => "$Bin/../archive/$file",
         'content_disposition' => 'inline'
     );
 };
@@ -95,7 +97,7 @@ websocket '/output_detail' => sub {
         # TODO: delete this on connection close
 
     # send initial values
-    foreach my $input ( keys $config->{inputs} ) {
+    foreach my $input ( keys %{$config->{inputs}} ) {
         $c->send(
             { json => { "${input}_min" => $config->{inputs}{$input}{min} } } );
         $c->send(
@@ -163,7 +165,7 @@ helper speak => sub {
 
     my $tmp = File::Temp->new(
         TEMPLATE => 'temp-XXXXX',
-        DIR      => '../archive/audio',
+        DIR      => "$Bin/../archive/audio",
         SUFFIX   => '.audio'
     );
     my $filename = $tmp->filename;
@@ -193,7 +195,8 @@ helper speak => sub {
 
 my @time     = localtime;
 my $gps_file = sprintf(
-    '../data/%04d%02d%02d-%d.gps',
+    '%s/../data/%04d%02d%02d-%d.gps',
+    $Bin,
     $time[5] + 1900,
     $time[4] + 1,
     $time[3], $$
@@ -234,7 +237,7 @@ my $id = Mojo::IOLoop->client(
     }
 );
 
-foreach my $measures ( keys $config->{inputs} ) {
+foreach my $measures ( keys %{$config->{inputs}} ) {
     my $input = $config->{inputs}->{$measures};
     if ( $input->{type} =~ /poll/ ) {
         Mojo::IOLoop->recurring(
@@ -259,7 +262,7 @@ Mojo::IOLoop->recurring(
     1 => sub {
 
         my @updates;
-        foreach my $measures ( keys $config->{inputs} ) {
+        foreach my $measures ( keys %{$config->{inputs}} ) {
             my $input = $config->{inputs}{$measures};
             if ( $input->{value} ) {
                 app->log->debug("update to $measures: $input->{value}");
