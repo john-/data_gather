@@ -18,3 +18,13 @@ Delete speed info:
 
 delete from sensor_history where input='speed' and recorded_at >= date '2015-06-08';
 
+Work on extracting data for gnuplut:
+
+\t
+\a
+\f ''
+\o <filename>
+select extract(epoch from recorded_at), value from sensor_history where input = 'cpu_temp' and recorded_at >= date '2015-08-01';
+\o
+
+gnuplot cpu_temp.plt

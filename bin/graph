@@ -9,3 +9,6 @@ rrdtool graph cart_stats.png --title="Cart Stats" \
           CDEF:far=cpu_temp,1.8,*,32,+"" \
           LINE2:cpu_temp#00a000:"D. Celsius" \
           LINE2:far#ff0000:"D. Fahrenheit\c"
+
+rrdtool graph ../db/cart.rrd --end now --start end-1000s \
+          DEF:v=../db/cart.rrd:speed:AVERAGE VDEF:vm=v,MAXIMUM PRINT:vm:%lf
