@@ -187,7 +187,11 @@ helper speak => sub {
         sub {
             my ( $c, $detail ) = @_;
 
-            $c->pubsub->notify( sensor_msg => encode_json($detail) );
+            if (-f $detail->{file}) {
+                $c->pubsub->notify( sensor_msg => encode_json($detail) );
+	    } else {
+	        app->log->error( 'No audio file available' );
+	    }
         }
     );
 
