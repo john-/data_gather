@@ -11,6 +11,7 @@ use Mojo::Log;
 
 use Statistics::Basic qw(:all);
 use Time::HiRes qw( usleep );
+use File::Basename;
 use IO::Handle;
 use File::Temp;    # names for tts files
 
@@ -170,13 +171,15 @@ helper speak => sub {
     );
     my $filename = $tmp->filename;
 
-    my @args = ( '/opt/swift/bin/swift', '-o', $filename, $utterance );
+    my($file, $dirs, $suffix) = fileparse($filename);
+
+    my @args = ( sprintf( 'echo "%s" | /usr/bin/text2wave -o %s', $utterance, $filename ) );
     $self->fork_call(
         sub {
             my $detail = {
                 type   => 'audio',
                 volume => $config->{volume},
-                file   => $filename,
+                file   => $file . $suffix,
                 label  => $utterance,
                 url    => app->defaults->{audio_url},
             };
