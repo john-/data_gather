@@ -44,7 +44,7 @@ get '/audio' => sub {
 
     # Open file in browser(do not show save dialog)
     $c->render_file(
-        'filepath'            => "$Bin/../archive/$file",
+        'filepath'            => "$Bin/../archive/audio/$file",
         'content_disposition' => 'inline'
     );
 };
@@ -128,7 +128,8 @@ websocket '/output_detail' => sub {
     $c->on(
         finish => sub {
             my ( $c, $code, $reason ) = @_;
-            $c->pubsub->unlisten( sensor_detail_msg => $cb );
+            $c->pubsub->unlisten( sensor_detail_msg => $cb ) or
+                $c->app->log->error('could not unlisten');
             $c->app->log->debug(
                 "WebSocket for details closed ($code) client $client");
         }
@@ -190,11 +191,12 @@ helper speak => sub {
         sub {
             my ( $c, $detail ) = @_;
 
-            if (-f $detail->{file}) {
+	    #app->log->debug(dumper($detail));
+            #if (-f $detail->{file}) {
                 $c->pubsub->notify( sensor_msg => encode_json($detail) );
-	    } else {
-	        app->log->error( 'No audio file available' );
-	    }
+	    #} else {
+	    #    app->log->error( 'No audio file available' );
+	    #}
         }
     );
 
@@ -327,7 +329,7 @@ Mojo::IOLoop->recurring(
             my ( $input, $value ) = each(%$row);
             app->pg->db->query(
                 'insert into sensor_history (input, value) values (?, ?)',
-                $input, $value );
+                $input, $value ) or app->log->error("could not update the database: $input->{value}");
         }
     }
 );
