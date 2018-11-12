@@ -9,6 +9,11 @@ use Mojo::Pg::PubSub;
 use Mojo::JSON qw(decode_json encode_json);
 use Mojo::Log;
 
+use Device::Chip::Adapter;
+use Device::Chip::INA219;
+use Device::Chip::TMP102;
+use Device::Chip::ADT7470;
+
 use Statistics::Basic qw(:all);
 use Time::HiRes qw( usleep );
 use File::Basename;
@@ -202,6 +207,52 @@ helper speak => sub {
 
 };
 
+helper adapter => sub {
+    my $ADAPTER = "LinuxKernel";
+
+    state $adapter = Device::Chip::Adapter->new_from_description( $ADAPTER )
+      or app->log->error('Could not create adapter');
+};
+
+helper ina => sub {
+    my $self = shift;
+
+    my $MOUNTPARAMS = 'bus=/dev/i2c-1,addr=0x40';
+
+    state $ina = Device::Chip::INA219->new;
+
+    $ina->mount_from_paramstr(
+	    $self->adapter,
+	    $MOUNTPARAMS,
+	)->get;
+};
+
+helper tmp102 => sub {
+    my $self = shift;
+
+    my $MOUNTPARAMS = 'bus=/dev/i2c-1,addr=0x48';
+
+    state $tmp102 = Device::Chip::TMP102->new;
+
+    $tmp102->mount_from_paramstr(
+	    $self->adapter,
+	    $MOUNTPARAMS,
+	)->get;
+};
+
+helper adt7470 => sub {
+    my $self = shift;
+
+    my $MOUNTPARAMS = 'bus=/dev/i2c-1,addr=0x2E';
+
+    state $adt7470 = Device::Chip::ADT7470->new;
+
+    $adt7470->mount_from_paramstr(
+	    $self->adapter,
+	    $MOUNTPARAMS,
+	)->get;
+};
+
 my @time     = localtime;
 my $gps_file = sprintf(
     '%s/../data/%04d%02d%02d-%d.gps',
@@ -248,12 +299,27 @@ my $id = Mojo::IOLoop->client(
 
 foreach my $measures ( keys %{$config->{inputs}} ) {
     my $input = $config->{inputs}->{$measures};
-    if ( $input->{type} =~ /poll/ ) {
-        Mojo::IOLoop->recurring(
+    my $type = $input->{type};
+    if ( $type =~ /poll/ ) {
+        # do polling
+	Mojo::IOLoop->recurring(
             $input->{rate} => sub {
                 my $loop = shift;
 
-                if ( $input->{type} eq 'poll_1wire' ) {
+		if ( $type eq 'poll_ina219_voltage' ) {
+		    $input->{value} = $input->{calc}
+		    ( app->ina->read_bus_voltage->get/1000 );
+		} elsif ( $type eq 'poll_ina219_current' ) {
+		    $input->{value} = $input->{calc}
+		    ( app->ina->read_shunt_voltage->get );
+		} elsif ( $type eq 'poll_tmp102' ) {
+		    $input->{value} = $input->{calc}
+		    ( app->tmp102->read_temp->get );
+		} elsif ( $type eq 'poll_adt7470' ) {
+		    $input->{value} = $input->{calc}
+		    ( app->adt7470->read_fan_rpm($input->{fan})->get );
+		    app->log->debug( sprintf('fan%d speed: %d', $input->{fan}, $input->{value}) );
+                } elsif ( $type eq 'poll_1wire' ) {
                     $input->{value} = $input->{calc}
 		      ( get_1wire( $input->{file} ) );
                 }
@@ -273,7 +339,7 @@ Mojo::IOLoop->recurring(
         my @updates;
         foreach my $measures ( keys %{$config->{inputs}} ) {
             my $input = $config->{inputs}{$measures};
-            if ( $input->{value} ) {
+            if ( exists $input->{value} ) {
                 app->log->debug("update to $measures: $input->{value}");
                 my $cur_val = delete $input->{value};
                 push @updates, { $measures => $cur_val };    # for db update
@@ -292,33 +358,31 @@ Mojo::IOLoop->recurring(
                         encode_json( { $measures . '_max' => $cur_val } ) );
 		}
 
-                # handle any updates that require tts
-                if ( $input->{announce} eq 'max' ) {
-                    if ( $cur_val >= $input->{max} ) {
-                        $input->{max} = $cur_val;
-                    }
-                    elsif ( $input->{val} == $input->{max} ) {
+                # handle any updates that require tts (max speed or threshold crossing)
+                if ( $input->{notify}{threshold} eq 'max' ) {
+                    if ( $cur_val >= $input->{notify}{prev} ) {
+                        $input->{notify}{prev} = $cur_val;
                         my $max_announce =
                           sprintf(
                             'New maximimum speed of %.2f miles per hour',
-                            $input->{max} );
+                            $input->{notify}{prev} );
                         app->log->info($max_announce);
                         Mojo::IOLoop->timer(
                             4 => sub { app->speak($max_announce) } );
                     }
-                    $input->{val} = $cur_val;
+                    #$input->{val} = $cur_val;
                 }
-                elsif ( $input->{announce} =~ /\d+/ ) {
-                    if ( abs( $input->{val} - $cur_val ) >= $input->{announce} )
+                elsif ( $input->{notify}{threshold} =~ /\d+/ ) {
+                    if ( abs( $input->{notify}{prev} - $cur_val ) >= $input->{notify}{threshold} )
                     {
                         app->log->info(
                             sprintf(
                                 'need to speak %s changed more than %d',
-                                $measures, $input->{announce}
+                                $measures, $input->{notify}{threshold}
                             )
                         );
-                        app->speak( sprintf( $input->{phrase}, $cur_val ) );
-                        $input->{val} = $cur_val;
+                        app->speak( sprintf( $input->{notify}{phrase}, $cur_val ) );
+                        $input->{notify}{prev} = $cur_val;
                     }
                 }
 
