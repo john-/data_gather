@@ -318,7 +318,6 @@ foreach my $measures ( keys %{$config->{inputs}} ) {
 		} elsif ( $type eq 'poll_adt7470' ) {
 		    $input->{value} = $input->{calc}
 		    ( app->adt7470->read_fan_rpm($input->{fan})->get );
-		    app->log->debug( sprintf('fan%d speed: %d', $input->{fan}, $input->{value}) );
                 } elsif ( $type eq 'poll_1wire' ) {
                     $input->{value} = $input->{calc}
 		      ( get_1wire( $input->{file} ) );
@@ -395,6 +394,34 @@ Mojo::IOLoop->recurring(
                 'insert into sensor_history (input, value) values (?, ?)',
                 $input, $value ) or app->log->error("could not update the database: $input->{value}");
         }
+    }
+);
+
+Mojo::IOLoop->recurring(
+    $config->{fan_control}{rate} => sub {
+	my $fc = $config->{fan_control};
+        # get most recent cpu temp
+	my $results = app->pg->db->query(
+	    'select value from sensor_history where input = \'cpu_temp\' order by reading_key desc limit 1' ) or app->log->error("could not retrieve cpu temperature");
+	my $cpu_temp = $results->hash->{value};
+
+	# map it to percent
+	# If your number X falls between A and B, and you would like Y to fall between C and D, you can apply the following linear transform:
+
+	# Y = (X-A)/(B-A) * (D-C) + C
+	my $percent = sprintf( '%d', ($cpu_temp - $fc->{temp}{min}) /
+	    ($fc->{temp}{max} - $fc->{temp}{min}) * ($fc->{speed}{max} - $fc->{speed}{min}) +
+	    $fc->{speed}{min} );
+
+	if ($percent > $fc->{speed}{max}) { $percent = $fc->{speed}{max} }
+	if ($percent < $fc->{speed}{min}) { $percent = $fc->{speed}{min} }
+
+	app->log->debug(sprintf('fan control: cpu_temp is %.1fF, changing fan speed to %d%%', $cpu_temp, $percent));
+
+	# change fan speed to the percent
+	foreach my $fan (1..2) {
+	    app->adt7470->write_duty_percent($fan, $percent)->get;
+	}
     }
 );
 
