@@ -1,0 +1,16 @@
+[Unit]
+    Description=Gather data service (data_gather)
+    Requires=postgresql.service gpsd.service
+    After=postgresql.service gpsd.service
+
+[Service]
+    User=<run as this user>
+    ExecStart=/cart/data_gather/bin/data_gather daemon --listen "http://*:3002"
+    RestartSec=30sec
+    Restart=on-failure
+    # attempt to make startup more robust.   maybe too soon after
+    # gpsd and that is why it doesn't always work on boot?
+    ExecStartPre=/bin/sleep 4
+
+[Install]
+    WantedBy=multi-user.target
