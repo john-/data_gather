@@ -3,4 +3,10 @@ sudo apt install gpsd
 I needed to comment this out from /lib/systemd/system/gpsd.socket:
 #ListenStream=[::1]:2947
 
+Alternately, that line will probably be fine if I didn't disable ipv6.
+
 cpanm --sudo --installdeps .
+
+Local changes to I2C modules:
+
+https://github.com/john-/cart_console/wiki/Arch-on-cart#modifications
